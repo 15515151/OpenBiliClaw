@@ -23,7 +23,8 @@
         "*://*.x.com/*",
         "*://*.twitter.com/*",
         "http://127.0.0.1/*",
-        "http://localhost/*"
+        "http://localhost/*",
+        "http://192.168.31.126/*"
     ],
     "background": {
         "service_worker": "dist/background/service-worker.js"

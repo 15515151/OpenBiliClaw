@@ -4,6 +4,12 @@
 
 ---
 
+## v0.3.156 / extension v0.3.156 / desktop v0.3.156: 兴趣探针 neutral 细分与忽略按钮（2026-07-05）
+
+后端源码走 `backend-v0.3.156`，浏览器插件走 `extension-v0.3.156`，桌面安装包走 `desktop-v0.3.156`。
+
+- **兴趣探针新增「暂时忽略」状态，细分为主动搁置与态度模糊两种子类型**：此前兴趣确认探针只有「喜欢」「不喜欢」「多聊聊」三个选项，用户对探针内容「暂时无感」或「还在犹豫」时只能选择「不喜欢」（会进入 30 天冷却期、降低权重）或不响应（探针持续占据消息位）。现在新增**「暂时忽略」按钮**（位于「喜欢」与「不喜欢」之间），点击后**只记录审计日志、不进入短期探索缓冲区、不修改用户画像、不惩罚兴趣权重**，让用户能无负担地跳过当前不想处理的探针。前端三处入口全部适配：消息流探针卡片、Profile 页面猜测兴趣列表、惊喜推荐反馈（惊喜推荐暂时忽略不影响后续推荐）。后端在聊天反馈分类时进一步细分为两种语义：`neutral_deferred`（用户主动选择暂缓，如「先放着吧」「稍后再看」）与 `neutral_ambiguous`（用户态度模糊不清，如「不确定」「再看看」），两种子类型分别记录到 `probe_feedback_history` 的 `classification` 与 `resulting_action` 字段，为后续数据分析（如对模糊态度探针 7 天后智能重推）打下基础。LLM Prompt 升级为 5 分类判断（`strong_positive` / `weak_positive` / `neutral_deferred` / `neutral_ambiguous` / `negative`），关键词判断函数拆分为 `deferred_terms`（「暂时忽略」「先放着」等）与 `ambiguous_terms`（「不确定」「不好说」等）两个优先级集合，优先匹配主动搁置以避免误判。新增 CSS 样式 `.feedback-icon-btn.is-neutral` 与 `.probe-btn.is-neutral`，视觉上呈现为中性灰色（区别于 confirm 的 accent 色与 reject 的默认色）。Desktop Web 与浏览器插件 popup 的按钮布局统一为 `[ 喜欢 ] / [ 暂时忽略 ] / [ 不喜欢 ]`，点击后 Toast 提示「已暂时忽略」，消息卡片显示「已忽略，权重保持不变。」聊天反馈分类的 neutral 变种会在认知更新中生成不同文案（deferred:「你选择暂时搁置『X』，稍后可以再聊。」/ ambiguous:「你对『X』还在观望中。」）新增实现文档 `NEUTRAL_FEEDBACK_IMPLEMENTATION.md` 记录完整数据流转、审计日志字段与测试验证点。
+
 ## v0.3.155 / extension v0.3.155 / desktop v0.3.155: 向量模型自诊自修、移动端直达与推荐池自愈（2026-07-05）
 
 后端源码走 `backend-v0.3.155`，浏览器插件走 `extension-v0.3.155`，桌面安装包走 `desktop-v0.3.155`。

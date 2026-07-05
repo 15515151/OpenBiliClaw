@@ -4748,16 +4748,40 @@ def create_app(
     ) -> tuple[str, str]:
         """Return ``(classification, classifier)`` for probe chat feedback."""
         llm_result = await _llm_judge_sentiment(user_message, ai_reply, domain)
-        if llm_result in {"strong_positive", "weak_positive", "negative"}:
+        if llm_result in {"strong_positive", "weak_positive", "negative", "neutral_deferred", "neutral_ambiguous"}:
             return llm_result, "llm"
         keyword_result = _keyword_judge_sentiment(user_message)
-        if keyword_result != "neutral":
+        if keyword_result not in {"neutral", "neutral_deferred", "neutral_ambiguous"}:
+            return keyword_result, "keyword"
+        # keyword_result is one of the neutral variants or generic neutral
+        if keyword_result in {"neutral_deferred", "neutral_ambiguous"}:
             return keyword_result, "keyword"
         return "neutral", "neutral_default"
 
     def _keyword_judge_sentiment(user_message: str) -> str:
         """Fallback keyword-based sentiment detection."""
         msg = user_message.lower()
+        # Explicit deferred terms (highest priority - user actively chooses to defer)
+        deferred_terms = {
+            "暂时忽略",
+            "先放着",
+            "稍后再看",
+            "先不看",
+            "暂时不看",
+        }
+        # Ambiguous/uncertain terms (user is unsure)
+        ambiguous_terms = {
+            "不确定",
+            "不好说",
+            "再看看",
+            "看情况",
+            "再说吧",
+            "不置可否",
+            "随便看看",
+            "无所谓",
+            "都行",
+            "看心情",
+        }
         negative_terms = {
             "不喜欢",
             "不感兴趣",
@@ -4779,6 +4803,12 @@ def create_app(
             "还行",
             "先试试",
         }
+        # Match deferred first (active choice to defer)
+        if any(kw in msg for kw in deferred_terms):
+            return "neutral_deferred"
+        # Then ambiguous (user is uncertain)
+        if any(kw in msg for kw in ambiguous_terms):
+            return "neutral_ambiguous"
         if any(kw in msg for kw in negative_terms):
             return "negative"
         if any(kw in msg for kw in strong_positive_terms):
@@ -4805,13 +4835,20 @@ def create_app(
                         "任务：判断用户对一个兴趣方向的态度。\n\n"
                         "规则：\n"
                         "1. 只输出一个英文标签："
-                        "strong_positive、weak_positive、neutral 或 negative\n"
+                        "strong_positive、weak_positive、neutral_deferred、neutral_ambiguous、negative\n"
                         "2. 不要输出任何其他内容\n\n"
                         "判断标准：\n"
                         "- strong_positive = 用户明确要加入画像、以后多推、这就是想看的\n"
                         "- weak_positive = 用户表达轻微兴趣、可以看看、偶尔看看，但未直接确认\n"
                         "- negative = 用户表达了不喜欢、不感兴趣、太难、太无聊\n"
-                        "- neutral = 态度不明确\n"
+                        "- neutral_deferred = 用户主动选择暂缓：明确说「暂时忽略」「先放着」「稍后再看」\n"
+                        "- neutral_ambiguous = 用户态度模糊不清：说「不确定」「再看看」「不好说」「看情况」\n"
+                        "\n"
+                        "⚠️ 重要区分：\n"
+                        "  • neutral_deferred（主动搁置）= 用户有明确意图暂时不处理\n"
+                        "  • neutral_ambiguous（态度模糊）= 用户还在犹豫、没想好\n"
+                        "  • 两种 neutral ≠ negative（明确不喜欢）\n"
+                        "  • 所有 neutral 都不会降低该方向的权重\n"
                     ),
                     user_input=f"方向：{domain}\n用户：{user_message}",
                     max_tokens=8,
@@ -4831,6 +4868,8 @@ def create_app(
                     "weak_positive",
                     "negative",
                     "neutral",
+                    "neutral_deferred",
+                    "neutral_ambiguous",
                 ):
                     logger.info("Sentiment LLM for '%s': %s (raw=%r)", domain, cleaned, raw)
                     return cleaned
@@ -5060,7 +5099,31 @@ def create_app(
                     source_event="weak_positive_chat",
                 )
                 summary = f"你对「{domain}」有轻微信号，先作为短期探索方向观察。"
+            elif sentiment == "neutral_deferred":
+                chat_response = "chat_neutral_deferred"
+                resulting_action = "neutral_deferred"
+                # Do not call _confirm_speculation_with_source
+                # Do not call _record_exploration_buffer_event
+                # Do not call user_reject_speculation
+                summary = f"你选择暂时搁置「{domain}」，稍后可以再聊。"
+            elif sentiment == "neutral_ambiguous":
+                chat_response = "chat_neutral_ambiguous"
+                resulting_action = "neutral_ambiguous"
+                # Do not call _confirm_speculation_with_source
+                # Do not call _record_exploration_buffer_event
+                # Do not call user_reject_speculation
+                summary = f"你对「{domain}」还在观望中（{turn.message}）。"
+            elif sentiment == "neutral":
+                chat_response = "chat_neutral"
+                resulting_action = "neutral_recorded_only"
+                # Do not call _confirm_speculation_with_source
+                # Do not call _record_exploration_buffer_event
+                # Do not call user_reject_speculation
+                summary = f"关于「{domain}」你说：{turn.message}（暂未形成明确态度）"
             else:
+                # Fallback: unrecognized sentiment -> treat as neutral
+                chat_response = "chat_neutral"
+                resulting_action = "unrecognized_as_neutral"
                 summary = f"关于「{domain}」你说：{turn.message}"
             if speculator is not None:
                 _record_probe_feedback_history(
@@ -5250,10 +5313,11 @@ def create_app(
     async def respond_to_interest_probe(payload: dict[str, Any]) -> Any:
         """User responds to a speculated interest probe.
 
-        Body: { "domain": "...", "response": "confirm" | "reject" | "chat", "message": "..." }
+        Body: { "domain": "...", "response": "confirm" | "reject" | "neutral" | "chat", "message": "..." }
 
         - confirm: Force-promote the speculation
         - reject: Move to cooldown (30 days)
+        - neutral: Record audit log only, no profile/buffer/cooldown changes
         - chat: Forward to dialogue engine with probe context, return reply
         """
         domain = str(payload.get("domain", "")).strip()
@@ -5261,8 +5325,8 @@ def create_app(
 
         if not domain:
             raise HTTPException(status_code=422, detail="domain is required")
-        if response_type not in {"confirm", "reject", "chat"}:
-            raise HTTPException(status_code=422, detail="response must be confirm, reject, or chat")
+        if response_type not in {"confirm", "reject", "neutral", "chat"}:
+            raise HTTPException(status_code=422, detail="response must be confirm, reject, neutral, or chat")
 
         speculator = getattr(ctx.soul_engine, "_speculator", None)
         if speculator is None:
@@ -5390,6 +5454,34 @@ def create_app(
                 )
             return {"ok": ok, "action": "rejected", "domain": domain}
 
+        if response_type == "neutral":
+            # Neutral: record audit log only, no profile/buffer/cooldown changes
+            metadata = _probe_metadata_from_active_speculation(speculator, domain)
+            _record_probe_feedback_history(
+                domain,
+                "probe_neutral",
+                speculator=speculator,
+                message="",
+                classification="neutral",
+                classifier="user_button",
+                resulting_action="neutral_recorded_only",
+                metadata=metadata,
+            )
+            # Do not call _confirm_speculation_with_source
+            # Do not call _record_exploration_buffer_event
+            # Do not call user_reject_speculation
+            _record_probe_cognition(
+                f"你对「{domain}」选择了暂时忽略。",
+                domain,
+                "neutral_button",
+            )
+            await _publish_probe_event(
+                "interest.neutral",
+                f"「{domain}」已暂时忽略，不影响当前画像。",
+                domain,
+            )
+            return {"ok": True, "action": "neutral", "domain": domain}
+
         # Chat: forward to dialogue with domain context injected
         raw_message = str(payload.get("message", "")).strip()
         if not raw_message:
@@ -5453,7 +5545,32 @@ def create_app(
                 source_event="weak_positive_chat",
             )
             summary = f"你对「{domain}」有轻微信号，先作为短期探索方向观察。"
+        elif sentiment == "neutral_deferred":
+            chat_response = "chat_neutral_deferred"
+            resulting_action = "neutral_deferred"
+            # Do not call _confirm_speculation_with_source
+            # Do not call _record_exploration_buffer_event
+            # Do not call user_reject_speculation
+            summary = f"你选择暂时搁置「{domain}」，稍后可以再聊。"
+        elif sentiment == "neutral_ambiguous":
+            chat_response = "chat_neutral_ambiguous"
+            resulting_action = "neutral_ambiguous"
+            # Do not call _confirm_speculation_with_source
+            # Do not call _record_exploration_buffer_event
+            # Do not call user_reject_speculation
+            summary = f"你对「{domain}」还在观望中（{raw_message}）。"
+        elif sentiment == "neutral":
+            chat_response = "chat_neutral"
+            resulting_action = "neutral_recorded_only"
+            # Do not call _confirm_speculation_with_source
+            # Do not call _record_exploration_buffer_event
+            # Do not call user_reject_speculation
+            summary = f"关于「{domain}」你说：{raw_message}（暂未形成明确态度）"
         else:
+            # Fallback: unrecognized sentiment -> treat as neutral
+            chat_response = "chat_neutral"
+            resulting_action = "unrecognized_as_neutral"
+            summary = f"关于「{domain}」你说：{raw_message}"
             summary = f"关于「{domain}」你说：{raw_message}"
 
         _record_probe_feedback_history(
