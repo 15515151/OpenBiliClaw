@@ -48,6 +48,17 @@ config.toml
 config.toml.*
 .env
 .env.local
+*_cookie.json
+bilibili_cookie.json
+douyin_cookie.json
+x_cookie.json
+
+# Runtime state / backups
+runtime.zip
+backups/
+memory/
+image-cache/
+consolidation_state.json
 
 # Node (Chrome extension)
 extension/node_modules/

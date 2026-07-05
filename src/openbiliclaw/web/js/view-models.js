@@ -479,6 +479,7 @@ export function getDelightMessageActions() {
 export function getProbeMessageActions() {
   return [
     { label: "喜欢", action: "confirm", primary: true },
+    { label: "暂时忽略", action: "neutral", primary: false },
     { label: "不喜欢", action: "reject", primary: false },
     { label: "多聊聊", action: "chat", primary: false },
   ];
@@ -487,6 +488,7 @@ export function getProbeMessageActions() {
 export function getAvoidanceProbeMessageActions() {
   return [
     { label: "确实不喜欢", action: "confirm", primary: true },
+    { label: "暂时忽略", action: "neutral", primary: false },
     { label: "不是", action: "reject", primary: false },
     { label: "多聊聊", action: "chat", primary: false },
   ];
